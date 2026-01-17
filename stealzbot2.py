@@ -1336,7 +1336,7 @@ async def close_vzp(interaction: discord.Interaction, vzp_id: str, enemy: str, r
         f"VZP `{vzp_id}` успешно закрыта!\n"
         f"Результат: **{result.name}**\n"
         f"Противник: **{enemy}**\n"
-        f"Точки: **{amount}**\n"
+        f"Точки: **{amount}**",
         ephemeral=True
     )
 
