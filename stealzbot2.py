@@ -78,6 +78,9 @@ position_messages: Dict[str, Dict[str, int]] = {}
 active_position_calls: Dict[int, Dict] = {}
 user_notification_messages: Dict[str, Dict[int, int]] = {}
 
+# ========== БЛОКИРОВКА ДЛЯ ПРЕДОТВРАЩЕНИЯ ОДНОВРЕМЕННОГО СОЗДАНИЯ ==========
+vzp_lock = asyncio.Lock()
+
 DATA_FILE = "vzp_data.json"
 SWAP_FILE = "swap_data.json"
 POSITIONS_FILE = "positions_data.json"
@@ -296,7 +299,7 @@ async def create_vzp_embed(vzp_id: str, vzp_data: VZPData) -> discord.Embed:
             
             old_name = old_member.mention if old_member else f"<@{old_user_id}>"
             new_name = new_member.mention if new_member else f"<@{new_user_id}>"
-            swap_list.append(f"• {new_name} → {old_name}")
+            swap_list.append(f"• {old_name} → {new_name}")
         
         if swap_list:
             embed.add_field(name="**SWAP**", value="\n".join(swap_list), inline=False)
@@ -674,7 +677,7 @@ async def on_message(message):
             await message.delete()
         except:
             pass
-        return
+            return
     
     try:
         requested_pos = int(content)
@@ -962,15 +965,86 @@ async def start_vzp(interaction: discord.Interaction, vzp_id: str):
         )
         return
     
+    # Блокировка для предотвращения одновременного создания
+    async with vzp_lock:
+        await _process_start_vzp(interaction, vzp_id)
+
+async def _process_start_vzp(interaction: discord.Interaction, vzp_id: str):
+    """Внутренняя функция для обработки команды start_vzp с блокировкой"""
+    vzp_data = active_vzp[vzp_id]
+    
+    # ========== ПРОВЕРКА 1: ЕСТЬ ЛИ УЖЕ КАТЕГОРИЯ ДЛЯ ЭТОЙ VZP ==========
+    if vzp_data.category_id:
+        category = interaction.guild.get_channel(vzp_data.category_id)
+        if category:
+            # Проверяем, действительно ли это категория VZP
+            if "VZP ID - " in category.name and category.name.endswith(vzp_id):
+                await interaction.response.send_message(
+                    f"⚠️ Для VZP `{vzp_id}` уже существует категория: {category.mention}\n"
+                    f"Статус VZP уже был обновлен на VZP IN PROCESS.",
+                    ephemeral=True
+                )
+                
+                # Обновляем статус на всякий случай
+                if vzp_data.status != 'VZP IN PROCESS':
+                    vzp_data.status = 'VZP IN PROCESS'
+                    await update_vzp_message(vzp_id)
+                    save_data()
+                
+                return
+            else:
+                # Если категория существует, но не совпадает по имени, очищаем category_id
+                vzp_data.category_id = None
+                print(f"⚠️ Обнаружена несоответствующая категория для VZP {vzp_id}")
+    
+    # ========== ПРОВЕРКА 2: ПРОВЕРЯЕМ, НЕТ ЛИ УЖЕ КАТЕГОРИИ С ТАКИМ ИМЕНЕМ ==========
+    guild = interaction.guild
+    category_name = f"VZP ID - {vzp_id}"
+    
+    # Ищем все существующие категории с таким именем
+    existing_categories = []
+    for category in guild.categories:
+        if isinstance(category, discord.CategoryChannel):
+            if category_name == category.name:
+                existing_categories.append(category)
+    
+    if existing_categories:
+        # Если есть существующие категории, берем первую
+        existing_category = existing_categories[0]
+        
+        # Если их несколько, сообщаем об этом
+        if len(existing_categories) > 1:
+            print(f"⚠️ Найдено {len(existing_categories)} категорий с именем {category_name}")
+        
+        vzp_data.category_id = existing_category.id
+        vzp_data.status = 'VZP IN PROCESS'
+        
+        await interaction.response.send_message(
+            f"⚠️ Категория для VZP `{vzp_id}` уже существует: {existing_category.mention}\n"
+            f"Статус VZP обновлен на VZP IN PROCESS.",
+            ephemeral=True
+        )
+        
+        await update_vzp_message(vzp_id)
+        save_data()
+        return
+    
+    # ========== ПРОВЕРКА 3: ПРОВЕРЯЕМ СТАТУС VZP ==========
+    if vzp_data.status == 'VZP IN PROCESS':
+        await interaction.response.send_message(
+            f"⚠️ VZP `{vzp_id}` уже запущена!",
+            ephemeral=True
+        )
+        return
+    
+    # ========== СОЗДАЕМ КАТЕГОРИЮ ==========
     # Отвечаем сразу, чтобы Discord знал, что бот обрабатывает команду
     await interaction.response.defer(thinking=True, ephemeral=True)
     
-    vzp_data = active_vzp[vzp_id]
     vzp_data.status = 'VZP IN PROCESS'
-    
     await update_vzp_message(vzp_id)
     
-    guild = interaction.guild
+    # Настраиваем права доступа
     overwrites = {
         guild.default_role: discord.PermissionOverwrite(view_channel=False),
         guild.me: discord.PermissionOverwrite(view_channel=True)
@@ -990,16 +1064,65 @@ async def start_vzp(interaction: discord.Interaction, vzp_id: str):
             overwrites[member] = discord.PermissionOverwrite(view_channel=True)
             members_to_move.append(member)
     
-    category = await guild.create_category_channel(
-        name=f"VZP ID - {vzp_id}",
-        overwrites=overwrites
-    )
+    try:
+        # Проверяем еще раз перед созданием (на случай если кто-то успел создать параллельно)
+        category_exists = any(cat.name == category_name for cat in guild.categories 
+                            if isinstance(cat, discord.CategoryChannel))
+        
+        if category_exists:
+            await interaction.followup.send(
+                f"⚠️ Категория с именем `{category_name}` уже существует! "
+                f"Пожалуйста, проверьте список категорий сервера.",
+                ephemeral=True
+            )
+            
+            # Ищем существующую категорию и присваиваем ее
+            for cat in guild.categories:
+                if isinstance(cat, discord.CategoryChannel) and cat.name == category_name:
+                    vzp_data.category_id = cat.id
+                    save_data()
+                    break
+            
+            return
+        
+        # Создаем категорию
+        category = await guild.create_category_channel(
+            name=category_name,
+            overwrites=overwrites
+        )
+        
+        vzp_data.category_id = category.id
+        
+        # Создаем каналы внутри категории
+        voice_channel = await category.create_voice_channel(name="vzp voice")
+        await category.create_text_channel(name="vzp flood")
+        await category.create_text_channel(name="vzp call")
+        
+        print(f"✅ Категория создана для VZP {vzp_id}: {category_name}")
+        
+    except discord.HTTPException as e:
+        print(f"❌ Ошибка создания категории для VZP {vzp_id}: {e}")
+        
+        if "Maximum number of categories reached" in str(e):
+            await interaction.followup.send(
+                f"❌ Достигнут максимальный лимит категорий на сервере!\n"
+                f"Удалите ненужные категории и попробуйте снова.",
+                ephemeral=True
+            )
+        else:
+            await interaction.followup.send(
+                f"❌ Ошибка создания категории: {e}",
+                ephemeral=True
+            )
+        
+        # Возвращаем статус
+        vzp_data.status = 'LIST IN PROCESS'
+        vzp_data.category_id = None
+        await update_vzp_message(vzp_id)
+        save_data()
+        return
     
-    vzp_data.category_id = category.id
-    voice_channel = await category.create_voice_channel(name="vzp voice")
-    await category.create_text_channel(name="vzp flood")
-    await category.create_text_channel(name="vzp call")
-    
+    # Перемещаем игроков в голосовой канал
     moved_count = 0
     for member in members_to_move:
         if member.voice and member.voice.channel:
@@ -1010,6 +1133,7 @@ async def start_vzp(interaction: discord.Interaction, vzp_id: str):
                 pass
         await asyncio.sleep(0.1)
     
+    # Отправляем уведомления
     notified = await notify_users_ls(
         vzp_id,
         "🎮 VZP НАЧАЛАСЬ!",
@@ -1022,8 +1146,10 @@ async def start_vzp(interaction: discord.Interaction, vzp_id: str):
     # Отправляем финальный ответ
     await interaction.followup.send(
         f"VZP `{vzp_id}` запущена! Создана категория с каналами.\n"
-        f"Перемещено в голосовой: {moved_count}/{len(members_to_move)} игроков\n"
-        f"Отправлено уведомлений: {notified}",
+        f"📁 Категория: {category.mention}\n"
+        f"🎤 Голосовой: {voice_channel.mention}\n"
+        f"👥 Перемещено в голосовой: {moved_count}/{len(members_to_move)} игроков\n"
+        f"📨 Отправлено уведомлений: {notified}",
         ephemeral=True
     )
 
@@ -1235,7 +1361,7 @@ async def swap_player(interaction: discord.Interaction, vzp_id: str, old_player:
     
     save_data()
 
-@bot.tree.command(name="close_vzp", description="Закрыть VZP (удалить категорию, уведомить и записать результат)")
+@bot.tree.command(name="close_vzp", description="Закрыть VZP (удалить все категории с этим ID, уведомить и записать результат)")
 @app_commands.describe(
     vzp_id="ID VZP",
     enemy="Имя противника",
@@ -1274,36 +1400,73 @@ async def close_vzp(interaction: discord.Interaction, vzp_id: str, enemy: str, r
     await interaction.response.defer(thinking=True, ephemeral=True)
     
     vzp_data = active_vzp[vzp_id]
+    guild = interaction.guild
     
+    # ========== УДАЛЯЕМ ВСЕ КАТЕГОРИИ С ЭТИМ ID ==========
+    category_name = f"VZP ID - {vzp_id}"
+    deleted_count = 0
+    categories_found = []
+    
+    # Ищем все категории с таким именем
+    for category in guild.categories:
+        if isinstance(category, discord.CategoryChannel):
+            if category.name == category_name:
+                categories_found.append(category)
+    
+    print(f"🔍 Найдено {len(categories_found)} категорий с именем '{category_name}'")
+    
+    # Удаляем все найденные категории
+    for category in categories_found:
+        try:
+            # Сначала удаляем все каналы в категории
+            for channel in category.channels:
+                try:
+                    await channel.delete()
+                    deleted_count += 1
+                    await asyncio.sleep(0.1)
+                except Exception as e:
+                    print(f"⚠️ Не удалось удалить канал {channel.name}: {e}")
+            
+            # Затем удаляем саму категорию
+            try:
+                await category.delete()
+                deleted_count += 1
+                print(f"✅ Удалена категория: {category.name}")
+            except Exception as e:
+                print(f"⚠️ Не удалось удалить категорию {category.name}: {e}")
+                
+        except Exception as e:
+            print(f"❌ Ошибка при удалении категории {category.name}: {e}")
+    
+    # ========== ПРОВЕРЯЕМ ТЕКУЩУЮ КАТЕГОРИЮ В ДАННЫХ VZP ==========
+    if vzp_data.category_id:
+        current_category = guild.get_channel(vzp_data.category_id)
+        if current_category and current_category.name == category_name:
+            # Если эта категория не была удалена выше (например, у нее другое имя)
+            if current_category not in categories_found:
+                try:
+                    for channel in current_category.channels:
+                        try:
+                            await channel.delete()
+                            deleted_count += 1
+                            await asyncio.sleep(0.1)
+                        except:
+                            pass
+                    
+                    await current_category.delete()
+                    deleted_count += 1
+                    print(f"✅ Удалена текущая категория VZP: {current_category.name}")
+                except Exception as e:
+                    print(f"⚠️ Не удалось удалить текущую категорию VZP: {e}")
+    
+    # ========== ОБНОВЛЯЕМ ДАННЫЕ VZP ==========
     vzp_data.enemy = enemy
     vzp_data.status = 'CLOSED'
     vzp_data.result = result.value
     vzp_data.amount = amount
+    vzp_data.category_id = None  # Очищаем ID категории
     
     await update_vzp_message(vzp_id)
-    
-    guild = interaction.guild
-    deleted_count = 0
-    
-    if vzp_data.category_id:
-        try:
-            category = guild.get_channel(vzp_data.category_id)
-            if category:
-                for channel in category.channels:
-                    try:
-                        await channel.delete()
-                        deleted_count += 1
-                        await asyncio.sleep(0.1)
-                    except:
-                        pass
-                
-                try:
-                    await category.delete()
-                    deleted_count += 1
-                except:
-                    pass
-        except:
-            pass
     
     participants_count = await post_vzp_result(vzp_id, result.value, amount, guild)
     
@@ -1315,7 +1478,9 @@ async def close_vzp(interaction: discord.Interaction, vzp_id: str, enemy: str, r
         'amount': amount,
         'participants': len(vzp_data.plus_users),
         'all_participants': participants_count,
-        'closed_at': datetime.now().isoformat()
+        'closed_at': datetime.now().isoformat(),
+        'categories_found': len(categories_found),
+        'objects_deleted': deleted_count
     }
     
     del active_vzp[vzp_id]
@@ -1331,12 +1496,22 @@ async def close_vzp(interaction: discord.Interaction, vzp_id: str, enemy: str, r
     
     save_data()
     
-    # Отправляем финальный ответ
-    await interaction.followup.send(
+    # ========== ОТПРАВЛЯЕМ ФИНАЛЬНЫЙ ОТВЕТ ==========
+    result_message = (
         f"VZP `{vzp_id}` успешно закрыта!\n"
-        f"Результат: **{result.name}**\n"
-        f"Противник: **{enemy}**\n"
-        f"Точки: **{amount}**",
+        f"🎯 Результат: **{result.name}**\n"
+        f"⚔️ Противник: **{enemy}**\n"
+        f"🏆 Точки: **{amount}**\n"
+    )
+    
+    if len(categories_found) > 0:
+        result_message += f"🗑️ Найдено категорий: **{len(categories_found)}**\n"
+        result_message += f"🗑️ Удалено объектов: **{deleted_count}**"
+    else:
+        result_message += "ℹ️ Категорий для удаления не найдено"
+    
+    await interaction.followup.send(
+        result_message,
         ephemeral=True
     )
 
