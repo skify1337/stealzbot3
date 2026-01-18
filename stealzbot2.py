@@ -26,6 +26,8 @@ TIER_ROLES = {
 }
 ALLOWED_CHANNEL = 1451552947300204594  # Канал для команд
 STATS_CHANNEL = 1174883465066451016  # Канал для статистики
+LOG_CHANNEL = 1462411357302427837  # Канал для логов
+BOT_STATUS_CHANNEL = 1462059954486771712  # Канал для статуса бота
 MAX_PARTICIPANTS_PER_VZP = 100
 MAX_ACTIVE_VZP = 10
 MIN_PARTICIPANTS_PER_VZP = 1
@@ -241,6 +243,20 @@ class VZPBot(commands.Bot):
 bot = VZPBot()
 
 # ===================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =====================
+async def send_log(message: str, color: discord.Color = discord.Color.blue()):
+    """Отправляет сообщение в канал логов"""
+    try:
+        log_channel = bot.get_channel(LOG_CHANNEL)
+        if log_channel and isinstance(log_channel, discord.TextChannel):
+            embed = discord.Embed(
+                description=message,
+                color=color,
+                timestamp=datetime.now()
+            )
+            await log_channel.send(embed=embed)
+    except Exception as e:
+        print(f"❌ Ошибка отправки лога: {e}")
+
 async def is_allowed_channel(interaction: discord.Interaction) -> bool:
     return interaction.channel_id == ALLOWED_CHANNEL
 
@@ -253,7 +269,7 @@ async def get_user_tier(user: discord.Member) -> Optional[int]:
             return tier_num
     return None
 
-async def create_vzp_embed(vzp_id: str, vzp_data: VZPData) -> discord.Embed:
+async def create_vzp_embed(vzp_id: str, vzp_data: VZPData, guild: discord.Guild = None) -> discord.Embed:
     status_colors = {
         'OPEN': discord.Color.green(),
         'LIST IN PROCESS': discord.Color.gold(),
@@ -277,9 +293,12 @@ async def create_vzp_embed(vzp_id: str, vzp_data: VZPData) -> discord.Embed:
     for tier_num in [1, 2, 3]:
         members_list = []
         for user_id in tier_lists[tier_num]:
-            member = bot.get_guild(interaction.guild.id).get_member(user_id) if 'interaction' in locals() else None
-            if member:
-                members_list.append(f"• {member.mention}")
+            if guild:
+                member = guild.get_member(user_id)
+                if member:
+                    members_list.append(f"• {member.mention}")
+                else:
+                    members_list.append(f"• <@{user_id}>")
             else:
                 members_list.append(f"• <@{user_id}>")
         
@@ -294,11 +313,16 @@ async def create_vzp_embed(vzp_id: str, vzp_data: VZPData) -> discord.Embed:
     if vzp_swaps:
         swap_list = []
         for old_user_id, new_user_id in vzp_swaps.items():
-            old_member = bot.get_guild(interaction.guild.id).get_member(old_user_id) if 'interaction' in locals() else None
-            new_member = bot.get_guild(interaction.guild.id).get_member(new_user_id) if 'interaction' in locals() else None
+            if guild:
+                old_member = guild.get_member(old_user_id)
+                new_member = guild.get_member(new_user_id)
+                
+                old_name = old_member.mention if old_member else f"<@{old_user_id}>"
+                new_name = new_member.mention if new_member else f"<@{new_user_id}>"
+            else:
+                old_name = f"<@{old_user_id}>"
+                new_name = f"<@{new_user_id}>"
             
-            old_name = old_member.mention if old_member else f"<@{old_user_id}>"
-            new_name = new_member.mention if new_member else f"<@{new_user_id}>"
             swap_list.append(f"• {old_name} → {new_name}")
         
         if swap_list:
@@ -309,7 +333,7 @@ async def create_vzp_embed(vzp_id: str, vzp_data: VZPData) -> discord.Embed:
     
     return embed
 
-async def update_vzp_message(vzp_id: str):
+async def update_vzp_message(vzp_id: str, guild: discord.Guild = None):
     if vzp_id not in active_vzp:
         return
     
@@ -321,7 +345,12 @@ async def update_vzp_message(vzp_id: str):
             return
         
         message = await channel.fetch_message(vzp_data.message_id)
-        embed = await create_vzp_embed(vzp_id, vzp_data)
+        
+        # Получаем гильдию из канала, если не передана
+        if not guild and channel.guild:
+            guild = channel.guild
+        
+        embed = await create_vzp_embed(vzp_id, vzp_data, guild)
         
         view = None
         if vzp_data.status == 'OPEN':
@@ -331,8 +360,10 @@ async def update_vzp_message(vzp_id: str):
     
     except discord.NotFound:
         print(f"Сообщение VZP {vzp_id} не найдено")
+        await send_log(f"❌ Сообщение VZP `{vzp_id}` не найдено", discord.Color.red())
     except Exception as e:
         print(f"Ошибка обновления VZP {vzp_id}: {e}")
+        await send_log(f"❌ Ошибка обновления VZP `{vzp_id}`: {e}", discord.Color.red())
 
 async def update_position_message(pos_id: str):
     if pos_id not in position_messages:
@@ -398,6 +429,7 @@ async def update_position_message(pos_id: str):
         save_data()
     except Exception as e:
         print(f"Ошибка обновления позиций: {e}")
+        await send_log(f"❌ Ошибка обновления позиций: {e}", discord.Color.red())
 
 async def send_position_notification(channel: discord.TextChannel, message_id: int, user_id: int, content: str):
     """Отправляет уведомление о записи/отмене в канал, но только для указанного пользователя"""
@@ -436,6 +468,7 @@ async def send_position_notification(channel: discord.TextChannel, message_id: i
         save_data()
     except Exception as e:
         print(f"Ошибка отправки уведомления: {e}")
+        await send_log(f"❌ Ошибка отправки уведомления о позиции: {e}", discord.Color.red())
 
 async def handle_vzp_button(interaction: discord.Interaction, vzp_id: str):
     if vzp_id not in active_vzp:
@@ -485,7 +518,7 @@ async def handle_vzp_button(interaction: discord.Interaction, vzp_id: str):
     else:
         vzp_data.plus_users[user.id] = tier
 
-    await update_vzp_message(vzp_id)
+    await update_vzp_message(vzp_id, interaction.guild)
     save_data()
     
     if is_in_list:
@@ -529,6 +562,7 @@ async def post_vzp_result(vzp_id: str, result: str, amount: int, guild: discord.
     
     if not stats_channel or not isinstance(stats_channel, discord.TextChannel):
         print(f"❌ Канал статистики {STATS_CHANNEL} не найден!")
+        await send_log(f"❌ Канал статистики {STATS_CHANNEL} не найден!", discord.Color.red())
         return
     
     all_players = set(vzp_data.plus_users.keys())
@@ -932,6 +966,8 @@ async def vzp_start(
     swap_history[vzp_id] = {}
     save_data()
     
+    await send_log(f"✅ Создана VZP `{vzp_id}`\n**Время:** {time}\n**Тип:** {attack_def_display}\n**Условия:** {', '.join(conditions_display)}\n**Калибры:** {caliber1.name} + {caliber2.name} + {caliber3.name}\n**Создал:** {interaction.user.mention}", discord.Color.green())
+    
     try:
         await asyncio.sleep(1)
         for i in range(5):
@@ -988,7 +1024,7 @@ async def _process_start_vzp(interaction: discord.Interaction, vzp_id: str):
                 # Обновляем статус на всякий случай
                 if vzp_data.status != 'VZP IN PROCESS':
                     vzp_data.status = 'VZP IN PROCESS'
-                    await update_vzp_message(vzp_id)
+                    await update_vzp_message(vzp_id, interaction.guild)
                     save_data()
                 
                 return
@@ -996,6 +1032,7 @@ async def _process_start_vzp(interaction: discord.Interaction, vzp_id: str):
                 # Если категория существует, но не совпадает по имени, очищаем category_id
                 vzp_data.category_id = None
                 print(f"⚠️ Обнаружена несоответствующая категория для VZP {vzp_id}")
+                await send_log(f"⚠️ Обнаружена несоответствующая категория для VZP `{vzp_id}`", discord.Color.yellow())
     
     # ========== ПРОВЕРКА 2: ПРОВЕРЯЕМ, НЕТ ЛИ УЖЕ КАТЕГОРИИ С ТАКИМ ИМЕНЕМ ==========
     guild = interaction.guild
@@ -1015,6 +1052,7 @@ async def _process_start_vzp(interaction: discord.Interaction, vzp_id: str):
         # Если их несколько, сообщаем об этом
         if len(existing_categories) > 1:
             print(f"⚠️ Найдено {len(existing_categories)} категорий с именем {category_name}")
+            await send_log(f"⚠️ Найдено {len(existing_categories)} категорий с именем `{category_name}`", discord.Color.yellow())
         
         vzp_data.category_id = existing_category.id
         vzp_data.status = 'VZP IN PROCESS'
@@ -1025,7 +1063,7 @@ async def _process_start_vzp(interaction: discord.Interaction, vzp_id: str):
             ephemeral=True
         )
         
-        await update_vzp_message(vzp_id)
+        await update_vzp_message(vzp_id, interaction.guild)
         save_data()
         return
     
@@ -1042,7 +1080,7 @@ async def _process_start_vzp(interaction: discord.Interaction, vzp_id: str):
     await interaction.response.defer(thinking=True, ephemeral=True)
     
     vzp_data.status = 'VZP IN PROCESS'
-    await update_vzp_message(vzp_id)
+    await update_vzp_message(vzp_id, interaction.guild)
     
     # Настраиваем права доступа
     overwrites = {
@@ -1095,13 +1133,15 @@ async def _process_start_vzp(interaction: discord.Interaction, vzp_id: str):
         
         # Создаем каналы внутри категории
         voice_channel = await category.create_voice_channel(name="vzp voice")
-        await category.create_text_channel(name="vzp flood")
-        await category.create_text_channel(name="vzp call")
+        flood_channel = await category.create_text_channel(name="vzp flood")
+        call_channel = await category.create_text_channel(name="vzp call")
         
         print(f"✅ Категория создана для VZP {vzp_id}: {category_name}")
+        await send_log(f"✅ Создана категория для VZP `{vzp_id}`\n**Категория:** {category.mention}\n**Голосовой:** {voice_channel.mention}\n**Создал:** {interaction.user.mention}", discord.Color.green())
         
     except discord.HTTPException as e:
         print(f"❌ Ошибка создания категории для VZP {vzp_id}: {e}")
+        await send_log(f"❌ Ошибка создания категории для VZP `{vzp_id}`: {e}", discord.Color.red())
         
         if "Maximum number of categories reached" in str(e):
             await interaction.followup.send(
@@ -1118,7 +1158,7 @@ async def _process_start_vzp(interaction: discord.Interaction, vzp_id: str):
         # Возвращаем статус
         vzp_data.status = 'LIST IN PROCESS'
         vzp_data.category_id = None
-        await update_vzp_message(vzp_id)
+        await update_vzp_message(vzp_id, interaction.guild)
         save_data()
         return
     
@@ -1132,6 +1172,59 @@ async def _process_start_vzp(interaction: discord.Interaction, vzp_id: str):
             except:
                 pass
         await asyncio.sleep(0.1)
+    
+    # Создаем сообщение распределения позиций в канале vzp call
+    try:
+        positions = vzp_data.members
+        pos_id = f"POS_{vzp_id}"
+        
+        position_assignments[pos_id] = {i: None for i in range(1, positions + 1)}
+        
+        active_position_calls[call_channel.id] = {
+            "pos_id": pos_id,
+            "vzp_id": vzp_id,
+            "created_by": interaction.user.id,
+            "created_at": datetime.now().isoformat()
+        }
+        
+        position_messages[pos_id] = {
+            "message_id": 0,
+            "channel_id": call_channel.id
+        }
+        
+        lines = []
+        for i in range(1, positions + 1):
+            lines.append(f"{i} - ...")
+        
+        embed = discord.Embed(
+            title=f"🎯 РАСПРЕДЕЛЕНИЕ ПОЗИЦИЙ VZP {vzp_id}",
+            description="\n".join(lines),
+            color=discord.Color.blue()
+        )
+        
+        embed.add_field(
+            name="📅 ИНФОРМАЦИЯ О VZP",
+            value=f"**Время:** {vzp_data.time}\n"
+                  f"**Статус:** {vzp_data.status}\n"
+                  f"**Участников:** {len(vzp_data.plus_users)}/{vzp_data.members}",
+            inline=False
+        )
+        
+        embed.add_field(
+            name="📝 КАК ЗАПИСАТЬСЯ",
+            value="**Отправьте в этот канал номер позиции, которую хотите занять (например: `5`)**\n"
+                  "**Чтобы освободить позицию, отправьте `отмена` или `cancel`**",
+            inline=False
+        )
+        
+        embed.set_footer(text=f"Создано: {interaction.user.display_name} | Всего позиций: {positions}")
+        
+        position_message = await call_channel.send(embed=embed)
+        position_messages[pos_id]["message_id"] = position_message.id
+        
+        print(f"✅ Создано распределение позиций для VZP {vzp_id} в канале {call_channel.name}")
+    except Exception as e:
+        print(f"⚠️ Не удалось создать распределение позиций: {e}")
     
     # Отправляем уведомления
     notified = await notify_users_ls(
@@ -1148,6 +1241,8 @@ async def _process_start_vzp(interaction: discord.Interaction, vzp_id: str):
         f"VZP `{vzp_id}` запущена! Создана категория с каналами.\n"
         f"📁 Категория: {category.mention}\n"
         f"🎤 Голосовой: {voice_channel.mention}\n"
+        f"💬 Общение: {flood_channel.mention}\n"
+        f"🎯 Распределение: {call_channel.mention}\n"
         f"👥 Перемещено в голосовой: {moved_count}/{len(members_to_move)} игроков\n"
         f"📨 Отправлено уведомлений: {notified}",
         ephemeral=True
@@ -1187,8 +1282,10 @@ async def stop_reactions(interaction: discord.Interaction, vzp_id: str):
         return
     
     vzp_data.status = 'LIST IN PROCESS'
-    await update_vzp_message(vzp_id)
+    await update_vzp_message(vzp_id, interaction.guild)
     save_data()
+    
+    await send_log(f"⏸️ Остановлен набор на VZP `{vzp_id}`\nВыполнил: {interaction.user.mention}", discord.Color.yellow())
 
 @bot.tree.command(name="return_reactions", description="Возобновить приём заявок на VZP")
 @app_commands.describe(vzp_id="ID VZP")
@@ -1231,8 +1328,10 @@ async def return_reactions(interaction: discord.Interaction, vzp_id: str):
         return
     
     vzp_data.status = 'OPEN'
-    await update_vzp_message(vzp_id)
+    await update_vzp_message(vzp_id, interaction.guild)
     save_data()
+    
+    await send_log(f"▶️ Возобновлен набор на VZP `{vzp_id}`\nВыполнил: {interaction.user.mention}", discord.Color.green())
 
 @bot.tree.command(name="swap_player", description="Заменить игрока в VZP")
 @app_commands.describe(
@@ -1309,8 +1408,9 @@ async def swap_player(interaction: discord.Interaction, vzp_id: str, old_player:
                             pass
             except Exception as e:
                 print(f"⚠️ Ошибка обновления прав: {e}")
+                await send_log(f"⚠️ Ошибка обновления прав при замене в VZP `{vzp_id}`: {e}", discord.Color.yellow())
     
-    await update_vzp_message(vzp_id)
+    await update_vzp_message(vzp_id, interaction.guild)
     
     success_embed = discord.Embed(
         title="ЗАМЕНА ИГРОКА ВЫПОЛНЕНА",
@@ -1328,6 +1428,8 @@ async def swap_player(interaction: discord.Interaction, vzp_id: str, old_player:
     success_embed.set_footer(text=f"Выполнено: {interaction.user.display_name} | {datetime.now().strftime('%d.%m.%Y %H:%M')}")
     
     await interaction.followup.send(embed=success_embed, ephemeral=True)
+    
+    await send_log(f"🔄 Замена в VZP `{vzp_id}`\n**Старый игрок:** {old_player.mention}\n**Новый игрок:** {new_player.mention}\n**Выполнил:** {interaction.user.mention}", discord.Color.orange())
     
     try:
         old_embed = discord.Embed(
@@ -1366,7 +1468,8 @@ async def swap_player(interaction: discord.Interaction, vzp_id: str, old_player:
     vzp_id="ID VZP",
     enemy="Имя противника",
     result="Результат VZП",
-    amount="Количество точек"
+    amount="Количество точек",
+    time="Новое время для результатов (не обязательно)"
 )
 @app_commands.choices(
     result=[
@@ -1374,7 +1477,7 @@ async def swap_player(interaction: discord.Interaction, vzp_id: str, old_player:
         app_commands.Choice(name="LOSE", value="lose"),
     ]
 )
-async def close_vzp(interaction: discord.Interaction, vzp_id: str, enemy: str, result: app_commands.Choice[str], amount: int):
+async def close_vzp(interaction: discord.Interaction, vzp_id: str, enemy: str, result: app_commands.Choice[str], amount: int, time: str = None):
     if not await is_allowed_channel(interaction):
         await interaction.response.send_message(
             f"❌ Эту команду можно использовать только в канале <#{ALLOWED_CHANNEL}>!",
@@ -1402,6 +1505,13 @@ async def close_vzp(interaction: discord.Interaction, vzp_id: str, enemy: str, r
     vzp_data = active_vzp[vzp_id]
     guild = interaction.guild
     
+    # Обновляем время VZP, если указано новое время
+    original_time = vzp_data.time
+    if time:
+        vzp_data.time = time
+        print(f"🕒 Время VZP {vzp_id} изменено: {original_time} -> {time}")
+        await send_log(f"🕒 Время VZP `{vzp_id}` изменено: `{original_time}` → `{time}`", discord.Color.blue())
+    
     # ========== УДАЛЯЕМ ВСЕ КАТЕГОРИИ С ЭТИМ ID ==========
     category_name = f"VZP ID - {vzp_id}"
     deleted_count = 0
@@ -1414,6 +1524,7 @@ async def close_vzp(interaction: discord.Interaction, vzp_id: str, enemy: str, r
                 categories_found.append(category)
     
     print(f"🔍 Найдено {len(categories_found)} категорий с именем '{category_name}'")
+    await send_log(f"🔍 Найдено {len(categories_found)} категорий с именем `{category_name}`", discord.Color.blue())
     
     # Удаляем все найденные категории
     for category in categories_found:
@@ -1426,17 +1537,21 @@ async def close_vzp(interaction: discord.Interaction, vzp_id: str, enemy: str, r
                     await asyncio.sleep(0.1)
                 except Exception as e:
                     print(f"⚠️ Не удалось удалить канал {channel.name}: {e}")
+                    await send_log(f"⚠️ Не удалось удалить канал {channel.name}: {e}", discord.Color.yellow())
             
             # Затем удаляем саму категорию
             try:
                 await category.delete()
                 deleted_count += 1
                 print(f"✅ Удалена категория: {category.name}")
+                await send_log(f"✅ Удалена категория: {category.name}", discord.Color.green())
             except Exception as e:
                 print(f"⚠️ Не удалось удалить категорию {category.name}: {e}")
+                await send_log(f"⚠️ Не удалось удалить категорию {category.name}: {e}", discord.Color.yellow())
                 
         except Exception as e:
             print(f"❌ Ошибка при удалении категории {category.name}: {e}")
+            await send_log(f"❌ Ошибка при удалении категории {category.name}: {e}", discord.Color.red())
     
     # ========== ПРОВЕРЯЕМ ТЕКУЩУЮ КАТЕГОРИЮ В ДАННЫХ VZP ==========
     if vzp_data.category_id:
@@ -1456,8 +1571,10 @@ async def close_vzp(interaction: discord.Interaction, vzp_id: str, enemy: str, r
                     await current_category.delete()
                     deleted_count += 1
                     print(f"✅ Удалена текущая категория VZP: {current_category.name}")
+                    await send_log(f"✅ Удалена текущая категория VZP: {current_category.name}", discord.Color.green())
                 except Exception as e:
                     print(f"⚠️ Не удалось удалить текущую категорию VZP: {e}")
+                    await send_log(f"⚠️ Не удалось удалить текущую категорию VZP: {e}", discord.Color.yellow())
     
     # ========== ОБНОВЛЯЕМ ДАННЫЕ VZP ==========
     vzp_data.enemy = enemy
@@ -1466,7 +1583,7 @@ async def close_vzp(interaction: discord.Interaction, vzp_id: str, enemy: str, r
     vzp_data.amount = amount
     vzp_data.category_id = None  # Очищаем ID категории
     
-    await update_vzp_message(vzp_id)
+    await update_vzp_message(vzp_id, guild)
     
     participants_count = await post_vzp_result(vzp_id, result.value, amount, guild)
     
@@ -1499,9 +1616,9 @@ async def close_vzp(interaction: discord.Interaction, vzp_id: str, enemy: str, r
     # ========== ОТПРАВЛЯЕМ ФИНАЛЬНЫЙ ОТВЕТ ==========
     result_message = (
         f"VZP `{vzp_id}` успешно закрыта!\n"
-        f"🎯 Результат: **{result.name}**\n"
-        f"⚔️ Противник: **{enemy}**\n"
-        f"🏆 Точки: **{amount}**\n"
+        f"Результат: **{result.name}**\n"
+        f"Противник: **{enemy}**\n"
+        f"Точки: **{amount}**\n"
     )
     
     if len(categories_found) > 0:
@@ -1514,10 +1631,12 @@ async def close_vzp(interaction: discord.Interaction, vzp_id: str, enemy: str, r
         result_message,
         ephemeral=True
     )
+    
+    await send_log(f"🔴 Закрыта VZP `{vzp_id}`\n**Результат:** {result.name}\n**Противник:** {enemy}\n**Точки:** {amount}\n**Время:** {vzp_data.time}\n**Удалено объектов:** {deleted_count}", discord.Color.red())
 
 @bot.tree.command(name="del_list", description="Удалить пользователя(ей) из списка VZP")
 @app_commands.describe(
-    members="Пользователи (можно выбрать нескольких)",
+    members="Пользователи (можно выбрать нескольких через пробел)",
     vzp_id="ID VZP"
 )
 async def del_list(interaction: discord.Interaction, members: str, vzp_id: str):
@@ -1603,7 +1722,7 @@ async def del_list(interaction: discord.Interaction, members: str, vzp_id: str):
         )
         return
     
-    await update_vzp_message(vzp_id)
+    await update_vzp_message(vzp_id, interaction.guild)
     save_data()
     
     members_text = ", ".join([f"<@{id}>" for id in deleted_members])
@@ -1611,13 +1730,15 @@ async def del_list(interaction: discord.Interaction, members: str, vzp_id: str):
         f"✅ Удалены из VZP `{vzp_id}`: {members_text}",
         ephemeral=True
     )
+    
+    await send_log(f"🗑️ Удалены из VZP `{vzp_id}`: {members_text}\n**Выполнил:** {interaction.user.mention}", discord.Color.red())
 
-@bot.tree.command(name="add_vzp", description="Добавить пользователя в VZP")
+@bot.tree.command(name="add_vzp", description="Добавить пользователя(ей) в VZP")
 @app_commands.describe(
     vzp_id="ID VZP",
-    member="Пользователь"
+    members="Пользователи (можно выбрать нескольких через пробел)"
 )
-async def add_vzp(interaction: discord.Interaction, vzp_id: str, member: discord.Member):
+async def add_vzp(interaction: discord.Interaction, vzp_id: str, members: str):
     if not await is_allowed_channel(interaction):
         await interaction.response.send_message(
             f"❌ Эту команду можно использовать только в канале <#{ALLOWED_CHANNEL}>!",
@@ -1648,64 +1769,112 @@ async def add_vzp(interaction: discord.Interaction, vzp_id: str, member: discord
         )
         return
     
-    if member.id in vzp_data.plus_users:
-        await interaction.response.send_message(
-            f"❌ Игрок {member.mention} уже в списке этой VZP!",
-            ephemeral=True
-        )
-        return
-    
-    tier = await get_user_tier(member)
-    if not tier:
-        await interaction.response.send_message(
-            f"❌ У игрока {member.mention} нет необходимой роли для участия в VZP!",
-            ephemeral=True
-        )
-        return
-    
-    vzp_data.plus_users[member.id] = tier
-    
-    # Выдача прав категории, если VZP запущена
-    if vzp_data.category_id and vzp_data.status == 'VZP IN PROCESS':
-        category = interaction.guild.get_channel(vzp_data.category_id)
-        if category:
+    member_ids = []
+    for part in members.split():
+        if part.startswith('<@') and part.endswith('>'):
             try:
-                await category.set_permissions(
-                    member,
-                    view_channel=True,
-                    connect=True,
-                    speak=True
-                )
-            except Exception as e:
-                print(f"⚠️ Ошибка выдачи прав категории: {e}")
+                member_id = int(part.strip('<@!>'))
+                member_ids.append(member_id)
+            except:
+                pass
     
-    await update_vzp_message(vzp_id)
+    if not member_ids:
+        await interaction.response.send_message(
+            "❌ Не удалось найти упоминания пользователей!",
+            ephemeral=True
+        )
+        return
+    
+    added_members = []
+    already_in_list = []
+    no_role_members = []
+    
+    for member_id in member_ids:
+        member = interaction.guild.get_member(member_id)
+        if not member:
+            continue
+        
+        if member.id in vzp_data.plus_users:
+            already_in_list.append(member_id)
+            continue
+        
+        tier = await get_user_tier(member)
+        if not tier:
+            no_role_members.append(member_id)
+            continue
+        
+        vzp_data.plus_users[member.id] = tier
+        added_members.append(member_id)
+        
+        # Выдача прав категории, если VZP запущена
+        if vzp_data.category_id and vzp_data.status == 'VZP IN PROCESS':
+            category = interaction.guild.get_channel(vzp_data.category_id)
+            if category:
+                try:
+                    await category.set_permissions(
+                        member,
+                        view_channel=True,
+                        connect=True,
+                        speak=True
+                    )
+                except Exception as e:
+                    print(f"⚠️ Ошибка выдачи прав категории: {e}")
+                    await send_log(f"⚠️ Ошибка выдачи прав категории для {member.mention} в VZP `{vzp_id}`: {e}", discord.Color.yellow())
+        
+        # Отправляем уведомление пользователю
+        try:
+            notify_embed = discord.Embed(
+                title="✅ ВАС ДОБАВИЛИ В VZP",
+                color=discord.Color.green()
+            )
+            notify_embed.add_field(name="ID VZP", value=vzp_id, inline=False)
+            notify_embed.add_field(name="Время", value=vzp_data.time, inline=False)
+            notify_embed.add_field(name="Добавил", value=interaction.user.display_name, inline=False)
+            notify_embed.add_field(name="Статус", value=vzp_data.status, inline=False)
+            await member.send(embed=notify_embed)
+        except:
+            pass
+    
+    if not added_members:
+        error_message = "❌ Не удалось добавить ни одного пользователя!\n"
+        if already_in_list:
+            error_message += f"• Уже в списке: {', '.join([f'<@{id}>' for id in already_in_list])}\n"
+        if no_role_members:
+            error_message += f"• Нет нужной роли: {', '.join([f'<@{id}>' for id in no_role_members])}"
+        
+        await interaction.response.send_message(
+            error_message,
+            ephemeral=True
+        )
+        return
+    
+    await update_vzp_message(vzp_id, interaction.guild)
     save_data()
     
-    try:
-        notify_embed = discord.Embed(
-            title="✅ ВАС ДОБАВИЛИ В VZP",
-            color=discord.Color.green()
-        )
-        notify_embed.add_field(name="ID VZP", value=vzp_id, inline=False)
-        notify_embed.add_field(name="Время", value=vzp_data.time, inline=False)
-        notify_embed.add_field(name="Добавил", value=interaction.user.display_name, inline=False)
-        notify_embed.add_field(name="Статус", value=vzp_data.status, inline=False)
-        await member.send(embed=notify_embed)
-    except:
-        pass
+    response_message = f"✅ Добавлены в VZP `{vzp_id}`:\n"
+    response_message += ", ".join([f"<@{id}>" for id in added_members])
+    
+    if already_in_list:
+        response_message += f"\n⚠️ Уже были в списке: {', '.join([f'<@{id}>' for id in already_in_list])}"
+    
+    if no_role_members:
+        response_message += f"\n❌ Нет нужной роли: {', '.join([f'<@{id}>' for id in no_role_members])}"
     
     await interaction.response.send_message(
-        f"✅ {member.mention} добавлен в VZP `{vzp_id}`!",
+        response_message,
         ephemeral=True
     )
+    
+    added_members_text = ", ".join([f"<@{id}>" for id in added_members])
+    log_message = f"✅ Добавлены в VZP `{vzp_id}`: {added_members_text}\n**Выполнил:** {interaction.user.mention}"
+    
+    await send_log(log_message, discord.Color.green())
 
 @bot.tree.command(name="call_vzp", description="Создать распределение позиций")
 @app_commands.describe(
-    positions="Количество позиций (от 1 до 100)",
-    vzp_id="ID VZP (не обязательно)"
+    positions="Количество позиций (от 1 до 100)"
 )
-async def call_vzp(interaction: discord.Interaction, positions: int, vzp_id: str = None):
+async def call_vzp(interaction: discord.Interaction, positions: int):
     if not await has_high_role(interaction):
         await interaction.response.send_message(
             "❌ У вас нет прав для этой команды!",
@@ -1720,20 +1889,13 @@ async def call_vzp(interaction: discord.Interaction, positions: int, vzp_id: str
         )
         return
     
-    if vzp_id and vzp_id not in active_vzp:
-        await interaction.response.send_message(
-            f"❌ VZP с ID `{vzp_id}` не найдена!",
-            ephemeral=True
-        )
-        return
-    
     pos_id = f"POS_{str(uuid.uuid4())[:8]}"
     
     position_assignments[pos_id] = {i: None for i in range(1, positions + 1)}
     
     active_position_calls[interaction.channel_id] = {
         "pos_id": pos_id,
-        "vzp_id": vzp_id,
+        "vzp_id": None,
         "created_by": interaction.user.id,
         "created_at": datetime.now().isoformat()
     }
@@ -1753,17 +1915,6 @@ async def call_vzp(interaction: discord.Interaction, positions: int, vzp_id: str
         color=discord.Color.blue()
     )
     
-    if vzp_id:
-        embed.title = f"🎯 РАСПРЕДЕЛЕНИЕ ПОЗИЦИЙ VZP {vzp_id}"
-        vzp_data = active_vzp[vzp_id]
-        embed.add_field(
-            name="📅 ИНФОРМАЦИЯ О VZP",
-            value=f"**Время:** {vzp_data.time}\n"
-                  f"**Статус:** {vzp_data.status}\n"
-                  f"**Участников:** {len(vzp_data.plus_users)}/{vzp_data.members}",
-            inline=False
-        )
-    
     embed.add_field(
         name="📝 КАК ЗАПИСАТЬСЯ",
         value="**Отправьте в этот канал номер позиции, которую хотите занять (например: `5`)**\n"
@@ -1779,6 +1930,10 @@ async def call_vzp(interaction: discord.Interaction, positions: int, vzp_id: str
     position_messages[pos_id]["message_id"] = message.id
     
     save_data()
+    
+    log_message = f"🎯 Создано распределение позиций `{pos_id}`\n**Позиций:** {positions}\n**Канал:** {interaction.channel.mention}\n**Создал:** {interaction.user.mention}"
+    
+    await send_log(log_message, discord.Color.blue())
 
 @bot.tree.command(name="clear_positions", description="Очистить все позиции в текущем канале")
 async def clear_positions(interaction: discord.Interaction):
@@ -1804,67 +1959,8 @@ async def clear_positions(interaction: discord.Interaction):
     
     await update_position_message(pos_id)
     await interaction.response.send_message("✅ Все позиции очищены!", ephemeral=True)
-
-@bot.tree.command(name="close_positions", description="Завершить набор позиций в текущем канале")
-async def close_positions(interaction: discord.Interaction):
-    if not await has_high_role(interaction):
-        await interaction.response.send_message(
-            "❌ У вас нет прав для этой команды!",
-            ephemeral=True
-        )
-        return
     
-    if interaction.channel_id not in active_position_calls:
-        await interaction.response.send_message(
-            "❌ В этом канале нет активного распределения позиций!",
-            ephemeral=True
-        )
-        return
-    
-    pos_info = active_position_calls[interaction.channel_id]
-    pos_id = pos_info["pos_id"]
-    
-    del active_position_calls[interaction.channel_id]
-    
-    positions = position_assignments.get(pos_id, {})
-    occupied = [pos for pos, member in positions.items() if member]
-    
-    embed = discord.Embed(
-        title="✅ НАБОР ПОЗИЦИЙ ЗАВЕРШЕН",
-        color=discord.Color.green()
-    )
-    
-    if pos_info["vzp_id"]:
-        embed.add_field(
-            name="VZP",
-            value=f"ID: `{pos_info['vzp_id']}`",
-            inline=False
-        )
-    
-    embed.add_field(
-        name="📊 СТАТИСТИКА",
-        value=f"**Всего позиций:** {len(positions)}\n"
-              f"**Занято:** {len(occupied)}\n"
-              f"**Свободно:** {len(positions) - len(occupied)}",
-        inline=False
-    )
-    
-    occupied_list = []
-    for pos in sorted(positions.keys()):
-        member = positions[pos]
-        if member:
-            occupied_list.append(f"{pos} - {member.mention}")
-    
-    if occupied_list:
-        embed.add_field(
-            name="🎮 ЗАНЯТЫЕ ПОЗИЦИИ",
-            value="\n".join(occupied_list),
-            inline=False
-        )
-    
-    embed.set_footer(text=f"Завершил: {interaction.user.display_name}")
-    
-    await interaction.response.send_message(embed=embed)
+    await send_log(f"🧹 Очищены все позиции в распределении `{pos_id}`\n**Канал:** {interaction.channel.mention}\n**Выполнил:** {interaction.user.mention}", discord.Color.yellow())
 
 @bot.tree.command(name="list_vzp", description="Показать активные VZP")
 async def list_vzp(interaction: discord.Interaction):
@@ -1924,6 +2020,7 @@ async def ping(interaction: discord.Interaction):
         return
     
     await interaction.followup.send("✅ Пинги отправлены!", ephemeral=True)
+    await send_log(f"🔔 Пинги отправлены в канале {interaction.channel.mention}\n**Выполнил:** {interaction.user.mention}", discord.Color.blue())
 
 @bot.tree.command(name="voice_status", description="Показать статус игроков в голосовом канале VZP")
 async def voice_status(interaction: discord.Interaction):
@@ -2039,7 +2136,7 @@ async def voice_status(interaction: discord.Interaction):
     
     vzp_swaps = swap_history.get(vzp_id, {})
     if vzp_swaps:
-        swap_list = []  # Переименовано с swap_info на swap_list для согласованности
+        swap_list = []
         for old_user_id, new_user_id in vzp_swaps.items():
             old_member = interaction.guild.get_member(old_user_id)
             new_member = interaction.guild.get_member(new_user_id)
@@ -2050,7 +2147,7 @@ async def voice_status(interaction: discord.Interaction):
             status_circle = "🟢" if new_user_id in players_in_voice else "🔴"
             swap_list.append(f"• {new_name} {status_circle} → {old_name}")
         
-        if swap_list:  # Исправлено с swap_info на swap_list
+        if swap_list:
             embed.add_field(
                 name="**🔄 ЗАМЕНЫ**",
                 value="\n".join(swap_list),
@@ -2078,10 +2175,9 @@ async def help_vzp(interaction: discord.Interaction):
         ("`/return_reactions`", "Возобновить приём заявок", f"Только в <#{ALLOWED_CHANNEL}>"),
         ("`/swap_player`", "Заменить игрока в VZP", f"Только в <#{ALLOWED_CHANNEL}>"),
         ("`/del_list`", "Удалить пользователя(ей) из списка", f"Только в <#{ALLOWED_CHANNEL}>"),
-        ("`/add_vzp`", "Добавить пользователя в VZP (работает даже во время VZP)", f"Только в <#{ALLOWED_CHANNEL}>"),
+        ("`/add_vzp`", "Добавить пользователя(ей) в VZP (работает даже во время VZP)", f"Только в <#{ALLOWED_CHANNEL}>"),
         ("`/call_vzp`", "Создать распределение позиций", "✅ РАБОТАЕТ ВЕЗДЕ"),
         ("`/clear_positions`", "Очистить все позиции в канале", "✅ РАБОТАЕТ ВЕЗДЕ"),
-        ("`/close_positions`", "Завершить набор позиций", "✅ РАБОТАЕТ ВЕЗДЕ"),
         ("`/ping`", "Пингануть всех участников VZP", "✅ РАБОТАЕТ ВЕЗДЕ (отправляет 5 раз @everyone)"),
         ("`/list_vzp`", "Показать активные VZP", "✅ РАБОТАЕТ ВЕЗДЕ"),
         ("`/voice_status`", "Показать статус игроков в голосовом канале VZP", "✅ Определяет VZP ID автоматически по категории канала"),
@@ -2106,7 +2202,6 @@ async def help_vzp(interaction: discord.Interaction):
     embed.add_field(
         name="📝 РАСПРЕДЕЛЕНИЕ ПОЗИЦИЙ",
         value="• `/call_vzp positions:10` - создать распределение на 10 позиций\n"
-              "• `/call_vzp positions:10 vzp_id:abc123` - создать распределение для VZP\n"
               "• **Отправьте цифру в канал**, чтобы занять позицию\n"
               "• **Отправьте `отмена`**, чтобы освободить позицию",
         inline=False
@@ -2124,6 +2219,25 @@ async def on_ready():
     print(f'📊 Серверов: {len(bot.guilds)}')
     print(f'📁 Активных VZP: {len(active_vzp)}')
     print(f'🎯 Активных распределений: {len(active_position_calls)}')
+    
+    # Отправляем сообщение о запуске в канал статуса
+    try:
+        status_channel = bot.get_channel(BOT_STATUS_CHANNEL)
+        if status_channel and isinstance(status_channel, discord.TextChannel):
+            embed = discord.Embed(
+                title="🟢 │ The bot has been successfully launched",
+                description=f"**Бот:** {bot.user.mention}\n**Версия:** VZP Manager\n**Серверов:** {len(bot.guilds)}\n**Активных VZP:** {len(active_vzp)}\n**Время:** {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}",
+                color=discord.Color.green(),
+                timestamp=datetime.now()
+            )
+            embed.set_footer(text="VZP Manager System")
+            await status_channel.send(embed=embed)
+    except Exception as e:
+        print(f"❌ Ошибка отправки статуса: {e}")
+    
+    # Отправляем лог о запуске
+    await send_log(f"🚀 Бот успешно запущен!\n**Бот:** {bot.user.mention}\n**Серверов:** {len(bot.guilds)}\n**Активных VZP:** {len(active_vzp)}\n**Активных распределений:** {len(active_position_calls)}", discord.Color.green())
+    
     print('=' * 50)
     print('Доступные команды:')
     print('   /vzp_start - создать VZP (только в разрешенном канале)')
@@ -2133,10 +2247,9 @@ async def on_ready():
     print('   /return_reactions - возобновить заявки (только в разрешенном канале)')
     print('   /swap_player - заменить игрока (только в разрешенном канале)')
     print('   /del_list - удалить из списка (можно нескольких, только в разрешенном канале)')
-    print('   /add_vzp - добавить игрока в VZP (работает даже во время VZP, только в разрешенном канале)')
+    print('   /add_vzp - добавить игрока(ов) в VZP (работает даже во время VZP, только в разрешенном канале)')
     print('   /call_vzp - создать распределение позиций (работает везде, до 100 позиций)')
     print('   /clear_positions - очистить все позиции в канале (работает везде)')
-    print('   /close_positions - завершить набор позиций (работает везде)')
     print('   /ping - пингануть всех (работает везде, отправляет 5 раз @everyone)')
     print('   /list_vzp - список VZP (работает везде)')
     print('   /voice_status - статус голосовой активности (работает везде)')
@@ -2159,6 +2272,10 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\n🛑 Бот остановлен пользователем")
         save_data()
+        # Отправляем лог об остановке
+        asyncio.run(send_log("🛑 Бот остановлен пользователем", discord.Color.red()))
     except Exception as e:
         print(f"❌ Критическая ошибка: {e}")
         save_data()
+        # Отправляем лог об ошибке
+        asyncio.run(send_log(f"❌ Критическая ошибка: {e}", discord.Color.red()))
